@@ -2,7 +2,6 @@
 
 import logging
 import pathlib
-import sys
 
 import click
 import math
@@ -11,12 +10,13 @@ import pandas
 import pandas as pd
 import seaborn as seaborn
 import torch
+from docdata import get_docdata
 from matplotlib import pyplot as plt
 from more_click import force_option
 from torch.utils.benchmark import Timer
 from tqdm.auto import tqdm
 
-from pykeen.datasets import datasets, get_dataset
+from pykeen.datasets import Dataset, datasets, datasets as datasets_dict, get_dataset
 from pykeen.sampling import negative_sampler_resolver
 from pykeen.sampling.filtering import PythonSetFilterer, filterer_resolver
 
@@ -27,6 +27,25 @@ default_time_plot_path = plot_root.joinpath("times.pdf")
 default_fnr_plot_path = plot_root.joinpath("fnr.pdf")
 
 logger = logging.getLogger(__name__)
+
+#: Datasets to benchmark. Only pick pre-stratified ones
+_datasets = [
+    'kinships',
+    'nations',
+    'umls',
+    'countries',
+    'codexsmall',
+    'codexmedium',
+    'codexlarge',
+    'fb15k',
+    'fb15k237',
+    'wn18',
+    'wn18rr',
+    'yago310',
+    'dbpedia50',
+]
+# Order by increasing number of triples
+_datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])
 
 
 @click.group()
@@ -40,7 +59,7 @@ def benchmark():
 
 
 @benchmark.command()
-@click.option("-d", "--dataset", type=click.Choice(datasets, case_sensitive=False), default="nations")
+@click.option("-d", "--dataset", type=click.Choice(datasets, case_sensitive=False))
 @click.option("-b", "--num-random-batches", type=int, default=20)
 @click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
 @force_option
@@ -50,23 +69,39 @@ def time(
     num_random_batches: int,
     directory: pathlib.Path,
     force: bool
-):
+) -> None:
     """Benchmark sampling time."""
-    dataset_instance = get_dataset(dataset=dataset)
-
     directory = directory.resolve().joinpath('times')
     directory.mkdir(exist_ok=True, parents=True)
-    output_path = directory.joinpath(dataset_instance.get_normalized_name()).with_suffix('.tsv')
-    if output_path.exists() and not force:
-        click.secho(f'Already calculated time results for {dataset_instance.get_normalized_name()}')
-        sys.exit(0)
 
-    batch_sizes = [2 ** i for i in range(1, min(16, int(math.log2(dataset_instance.training.num_triples))))]
-    logger.info(f"Evaluating batch sizes {batch_sizes} for dataset {dataset}")
+    if dataset:
+        _dataset_list = [dataset]
+    else:
+        _dataset_list = _datasets
+
+    for dataset in _dataset_list:
+        dataset_instance = get_dataset(dataset=dataset)
+        _time_helper(dataset_instance, directory=directory, num_random_batches=num_random_batches, force=force)
+
+
+def _time_helper(
+    dataset: Dataset,
+    *,
+    directory: pathlib.Path,
+    num_random_batches: int,
+    force: bool = False,
+) -> pd.DataFrame:
+    output_path = directory.joinpath(dataset.get_normalized_name()).with_suffix('.tsv')
+    if output_path.exists() and not force:
+        click.secho(f'Using pre-calculated time results for {dataset.get_normalized_name()}')
+        return pd.read_csv(output_path, sep='\t')
+
+    batch_sizes = [2 ** i for i in range(1, min(16, int(math.log2(dataset.training.num_triples))))]
+    logger.info(f"Evaluating batch sizes {batch_sizes} for dataset {dataset.get_normalized_name()}")
 
     data = []
     for negative_sampler in negative_sampler_resolver.lookup_dict.keys():
-        sampler = negative_sampler_resolver.make(query=negative_sampler, triples_factory=dataset_instance.training)
+        sampler = negative_sampler_resolver.make(query=negative_sampler, triples_factory=dataset.training)
         progress = tqdm(
             (
                 (b, i)
@@ -80,8 +115,8 @@ def time(
 
         for batch_size, batch_id in progress:
             progress.set_postfix(batch_size=batch_size)
-            positive_batch_idx = torch.randperm(dataset_instance.training.num_triples)[:batch_size]
-            positive_batch = dataset_instance.training.mapped_triples[positive_batch_idx]
+            positive_batch_idx = torch.randperm(dataset.training.num_triples)[:batch_size]
+            positive_batch = dataset.training.mapped_triples[positive_batch_idx]
             timer = Timer(
                 stmt="sampler.corrupt_batch(positive_batch=positive_batch)",
                 globals=dict(
@@ -91,15 +126,16 @@ def time(
             )
             measurement = timer.blocked_autorange()
             data.extend(
-                (batch_size, batch_id, t, negative_sampler, dataset)
+                (batch_size, batch_id, t, negative_sampler, dataset.get_normalized_name())
                 for t in measurement.raw_times
             )
     df = pandas.DataFrame(data=data, columns=["batch_size", "batch_id", "time", "sampler", "dataset"])
     df.to_csv(output_path, sep="\t", index=False)
+    return df
 
 
 @benchmark.command()
-@click.option("-d", "--dataset", type=click.Choice(datasets, case_sensitive=False), default="nations")
+@click.option("-d", "--dataset", type=click.Choice(datasets, case_sensitive=False))
 @click.option("-b", "--batch_size", type=int, default=32)
 @click.option("-n", "--num-samples", type=int, default=4096)  # TODO: Determine this based on dataset?
 @click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
@@ -113,21 +149,38 @@ def fnr(
     force: bool,
 ):
     """Estimate false negative rate."""
-    dataset_instance = get_dataset(dataset=dataset)
-
     directory = directory.resolve().joinpath('fnr')
     directory.mkdir(exist_ok=True, parents=True)
-    output_path = directory.joinpath(dataset_instance.get_normalized_name()).with_suffix('.tsv')
+
+    if dataset:
+        _dataset_list = [dataset]
+    else:
+        _dataset_list = _datasets
+
+    for dataset in _dataset_list:
+        dataset_instance = get_dataset(dataset=dataset)
+        _fnr_helper(dataset_instance, directory=directory, num_samples=num_samples, batch_size=batch_size, force=force)
+
+
+def _fnr_helper(
+    dataset: Dataset,
+    *,
+    directory: pathlib.Path,
+    num_samples: int,
+    batch_size: int,
+    force: bool = False,
+) -> pd.DataFrame:
+    output_path = directory.joinpath(dataset.get_normalized_name()).with_suffix('.tsv')
     if output_path.exists() and not force:
-        click.secho(f'Already calculated FNR results for {dataset_instance.get_normalized_name()}')
-        sys.exit(0)
+        click.secho(f'Using pre-calculated fnr results for {dataset.get_normalized_name()}')
+        return pd.read_csv(output_path, sep='\t')
 
     # create index structure for existence check
     filterer = PythonSetFilterer(
         mapped_triples=torch.cat(
             [
-                dataset_instance.training.mapped_triples,
-                dataset_instance.validation.mapped_triples,
+                dataset.training.mapped_triples,
+                dataset.validation.mapped_triples,
                 # dataset_instance.testing, # TODO: should this be used?
             ],
             dim=0,
@@ -138,11 +191,11 @@ def fnr(
     for negative_sampler in negative_sampler_resolver.lookup_dict.keys():
         sampler = negative_sampler_resolver.make(
             query=negative_sampler,
-            triples_factory=dataset_instance.training,
+            triples_factory=dataset.training,
             num_negs_per_pos=num_samples,
         )
         for positive_batch in tqdm(
-            dataset_instance.training.mapped_triples.split(split_size=batch_size, dim=0),
+            dataset.training.mapped_triples.split(split_size=batch_size, dim=0),
             unit="batch",
             unit_scale=True,
             desc=f'FNR {sampler.get_normalized_name()}, {filterer_key}',
@@ -153,7 +206,7 @@ def fnr(
             ).view(negative_batch.shape[:-1]).float().mean(dim=-1)
             data.extend(
                 (
-                    dataset,
+                    dataset.get_normalized_name(),
                     negative_sampler,
                     filterer_key,
                     false_negative_rate,
@@ -162,6 +215,7 @@ def fnr(
             )
     df = pandas.DataFrame(data=data, columns=["dataset", "sampler", "filterer", "fnr"])
     df.to_csv(output_path, sep="\t", index=False)
+    return df
 
 
 @main.group()
