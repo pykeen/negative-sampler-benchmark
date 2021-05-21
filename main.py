@@ -2,6 +2,7 @@
 
 import logging
 import pathlib
+from typing import Iterable, Optional
 
 import click
 import math
@@ -16,7 +17,7 @@ from more_click import force_option
 from torch.utils.benchmark import Timer
 from tqdm.auto import tqdm
 
-from pykeen.datasets import Dataset, datasets, datasets as datasets_dict, get_dataset
+from pykeen.datasets import Dataset, datasets as datasets_dict, get_dataset
 from pykeen.sampling import negative_sampler_resolver
 from pykeen.sampling.filtering import PythonSetFilterer, filterer_resolver
 
@@ -59,7 +60,7 @@ def benchmark():
 
 
 @benchmark.command()
-@click.option("-d", "--dataset", type=click.Choice(datasets, case_sensitive=False))
+@click.option("-d", "--dataset", type=click.Choice(datasets_dict, case_sensitive=False))
 @click.option("-b", "--num-random-batches", type=int, default=20)
 @click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
 @force_option
@@ -73,14 +74,7 @@ def time(
     """Benchmark sampling time."""
     directory = directory.resolve().joinpath('times')
     directory.mkdir(exist_ok=True, parents=True)
-
-    if dataset:
-        _dataset_list = [dataset]
-    else:
-        _dataset_list = _datasets
-
-    for dataset in _dataset_list:
-        dataset_instance = get_dataset(dataset=dataset)
+    for dataset_instance in _iterate_datasets(dataset):
         _time_helper(dataset_instance, directory=directory, num_random_batches=num_random_batches, force=force)
 
 
@@ -135,7 +129,7 @@ def _time_helper(
 
 
 @benchmark.command()
-@click.option("-d", "--dataset", type=click.Choice(datasets, case_sensitive=False))
+@click.option("-d", "--dataset", type=click.Choice(datasets_dict, case_sensitive=False))
 @click.option("-b", "--batch_size", type=int, default=32)
 @click.option("-n", "--num-samples", type=int, default=4096)  # TODO: Determine this based on dataset?
 @click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
@@ -151,14 +145,7 @@ def fnr(
     """Estimate false negative rate."""
     directory = directory.resolve().joinpath('fnr')
     directory.mkdir(exist_ok=True, parents=True)
-
-    if dataset:
-        _dataset_list = [dataset]
-    else:
-        _dataset_list = _datasets
-
-    for dataset in _dataset_list:
-        dataset_instance = get_dataset(dataset=dataset)
+    for dataset_instance in _iterate_datasets(dataset):
         _fnr_helper(dataset_instance, directory=directory, num_samples=num_samples, batch_size=batch_size, force=force)
 
 
@@ -216,6 +203,17 @@ def _fnr_helper(
     df = pandas.DataFrame(data=data, columns=["dataset", "sampler", "filterer", "fnr"])
     df.to_csv(output_path, sep="\t", index=False)
     return df
+
+
+def _iterate_datasets(dataset: Optional[str]) -> Iterable[Dataset]:
+    if dataset:
+        _dataset_list = [dataset]
+    else:
+        _dataset_list = _datasets
+    it = tqdm(_dataset_list, desc='Dataset')
+    for dataset in it:
+        it.set_postfix(dataset=dataset)
+        yield get_dataset(dataset=dataset)
 
 
 @main.group()
