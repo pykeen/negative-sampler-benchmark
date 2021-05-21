@@ -133,7 +133,7 @@ def fnr(
             dim=0,
         ),
     )
-    filterer_key= filterer_resolver.normalize_inst(filterer)
+    filterer_key = filterer_resolver.normalize_inst(filterer)
     data = []
     for negative_sampler in negative_sampler_resolver.lookup_dict.keys():
         sampler = negative_sampler_resolver.make(
@@ -190,6 +190,7 @@ def plot_times(
         hue="sampler",
         kind="line",
         col="dataset",
+        col_wrap=4 if df.dataset.nunique() > 4 else None,
         # ci=100,
         # estimator=numpy.median,
     ).set(
@@ -226,8 +227,9 @@ def plot_fnr(
         y="fnr",
         col="dataset",
         kind="box",
-    ).set(
-        ylabel="False Negative Rate",
+        col_wrap=4 if df.dataset.nunique() > 4 else None,
+    ).set_axis_labels(
+        "", "False Negative Rate",
     )
     g.tight_layout()
 
