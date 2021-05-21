@@ -1,25 +1,28 @@
 """Main script."""
+
 import logging
-import math
 import pathlib
+import sys
 
 import click
+import math
 import more_click
 import pandas
+import pandas as pd
 import seaborn as seaborn
 import torch
 from matplotlib import pyplot as plt
-from pykeen.datasets import datasets, get_dataset
-from pykeen.sampling import negative_sampler_resolver
-from pykeen.sampling.filtering import PythonSetFilterer
+from more_click import force_option
 from torch.utils.benchmark import Timer
 from tqdm.auto import tqdm
+
+from pykeen.datasets import datasets, get_dataset
+from pykeen.sampling import negative_sampler_resolver
+from pykeen.sampling.filtering import PythonSetFilterer, filterer_resolver
 
 HERE = pathlib.Path(__file__).resolve().parent
 measurement_root = HERE.joinpath("data")
 plot_root = HERE.joinpath("img")
-default_times_path = measurement_root.joinpath("times.tsv")
-default_fnr_path = measurement_root.joinpath("fnr.tsv")
 default_time_plot_path = plot_root.joinpath("times.pdf")
 default_fnr_plot_path = plot_root.joinpath("fnr.pdf")
 
@@ -39,15 +42,25 @@ def benchmark():
 @benchmark.command()
 @click.option("-d", "--dataset", type=click.Choice(datasets, case_sensitive=False), default="nations")
 @click.option("-b", "--num-random-batches", type=int, default=20)
-@click.option("-o", "--output-path", type=pathlib.Path, default=default_times_path)
+@click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
+@force_option
 @more_click.verbose_option
 def time(
     dataset: str,
     num_random_batches: int,
-    output_path: pathlib.Path,
+    directory: pathlib.Path,
+    force: bool
 ):
     """Benchmark sampling time."""
     dataset_instance = get_dataset(dataset=dataset)
+
+    directory = directory.resolve().joinpath('times')
+    directory.mkdir(exist_ok=True, parents=True)
+    output_path = directory.joinpath(dataset_instance.get_normalized_name()).with_suffix('.tsv')
+    if output_path.exists() and not force:
+        click.secho(f'Already calculated time results for {dataset_instance.get_normalized_name()}')
+        sys.exit(0)
+
     batch_sizes = [2 ** i for i in range(1, min(16, int(math.log2(dataset_instance.training.num_triples))))]
     logger.info(f"Evaluating batch sizes {batch_sizes} for dataset {dataset}")
 
@@ -74,7 +87,7 @@ def time(
                 globals=dict(
                     sampler=sampler,
                     positive_batch=positive_batch,
-                )
+                ),
             )
             measurement = timer.blocked_autorange()
             data.extend(
@@ -82,7 +95,6 @@ def time(
                 for t in measurement.raw_times
             )
     df = pandas.DataFrame(data=data, columns=["batch_size", "batch_id", "time", "sampler", "dataset"])
-    output_path.parent.mkdir(exist_ok=True, parents=True)
     df.to_csv(output_path, sep="\t", index=False)
 
 
@@ -90,16 +102,26 @@ def time(
 @click.option("-d", "--dataset", type=click.Choice(datasets, case_sensitive=False), default="nations")
 @click.option("-b", "--batch_size", type=int, default=32)
 @click.option("-n", "--num-samples", type=int, default=4096)  # TODO: Determine this based on dataset?
-@click.option("-o", "--output-path", type=pathlib.Path, default=default_fnr_path)
+@click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
 @more_click.verbose_option
+@force_option
 def fnr(
     dataset: str,
     batch_size: int,
     num_samples: int,
-    output_path: pathlib.Path,
+    directory: pathlib.Path,
+    force: bool,
 ):
     """Estimate false negative rate."""
     dataset_instance = get_dataset(dataset=dataset)
+
+    directory = directory.resolve().joinpath('fnr')
+    directory.mkdir(exist_ok=True, parents=True)
+    output_path = directory.joinpath(dataset_instance.get_normalized_name()).with_suffix('.tsv')
+    if output_path.exists() and not force:
+        click.secho(f'Already calculated FNR results for {dataset_instance.get_normalized_name()}')
+        sys.exit(0)
+
     # create index structure for existence check
     filterer = PythonSetFilterer(
         mapped_triples=torch.cat(
@@ -111,6 +133,7 @@ def fnr(
             dim=0,
         ),
     )
+    filterer_key= filterer_resolver.normalize_inst(filterer)
     data = []
     for negative_sampler in negative_sampler_resolver.lookup_dict.keys():
         sampler = negative_sampler_resolver.make(
@@ -122,6 +145,7 @@ def fnr(
             dataset_instance.training.mapped_triples.split(split_size=batch_size, dim=0),
             unit="batch",
             unit_scale=True,
+            desc=f'FNR {sampler.get_normalized_name()}, {filterer_key}',
         ):
             negative_batch = sampler.corrupt_batch(positive_batch=positive_batch)
             false_negative_rates = filterer.contains(
@@ -131,25 +155,34 @@ def fnr(
                 (
                     dataset,
                     negative_sampler,
+                    filterer_key,
                     false_negative_rate,
                 )
                 for false_negative_rate in false_negative_rates.tolist()
             )
-    df = pandas.DataFrame(data=data, columns=["dataset", "sampler", "fnr"])
-    output_path.parent.mkdir(exist_ok=True, parents=True)
+    df = pandas.DataFrame(data=data, columns=["dataset", "sampler", "filterer", "fnr"])
     df.to_csv(output_path, sep="\t", index=False)
 
 
-@main.command()
-@click.option("-i", "--input-path", type=pathlib.Path, default=default_times_path)
-@click.option("-o", "--output-path", type=pathlib.Path, default=default_time_plot_path)
+@main.group()
+def plot():
+    """Plot commands."""
+
+
+@plot.command(name='times')
+@click.option("-i", "--directory", type=pathlib.Path, default=measurement_root)
+@click.option("-o", "--output", type=pathlib.Path, default=plot_root)
 @more_click.verbose_option
-def plot(
-    input_path: pathlib.Path,
-    output_path: pathlib.Path,
+def plot_times(
+    directory: pathlib.Path,
+    output: pathlib.Path,
 ):
     """Create plots."""
-    df = pandas.read_csv(input_path, sep="\t")
+    key = 'times'
+    df = pd.concat([
+        pd.read_csv(path, sep='\t')
+        for path in directory.joinpath(key).iterdir()
+    ])
     g = seaborn.relplot(
         data=df,
         x="batch_size",
@@ -162,23 +195,31 @@ def plot(
     ).set(
         xscale="log",
         xlabel="batch size",
-        ylabel="s/batch",
+        ylabel="time (s)/batch",
     )
     g.tight_layout()
-    output_path.parent.mkdir(exist_ok=True, parents=True)
-    plt.savefig(output_path)
+
+    output.mkdir(exist_ok=True, parents=True)
+    figure_path_stem = output.joinpath(key)
+    plt.savefig(figure_path_stem.with_suffix('.svg'))
+    plt.savefig(figure_path_stem.with_suffix('.pdf'))
+    plt.savefig(figure_path_stem.with_suffix('.png'), dpi=300)
 
 
-@main.command()
-@click.option("-i", "--input-path", type=pathlib.Path, default=default_fnr_path)
-@click.option("-o", "--output-path", type=pathlib.Path, default=default_fnr_plot_path)
+@plot.command(name='fnr')
+@click.option("-i", "--directory", type=pathlib.Path, default=measurement_root)
+@click.option("-o", "--output", type=pathlib.Path, default=plot_root)
 @more_click.verbose_option
-def plot2(
-    input_path: pathlib.Path,
-    output_path: pathlib.Path,
+def plot_fnr(
+    directory: pathlib.Path,
+    output: pathlib.Path,
 ):
     """Create false negative rate plots."""
-    df = pandas.read_csv(input_path, sep="\t")
+    key = 'fnr'
+    df = pd.concat([
+        pd.read_csv(path, sep='\t')
+        for path in directory.joinpath(key).iterdir()
+    ])
     g = seaborn.catplot(
         data=df,
         x="sampler",
@@ -189,8 +230,12 @@ def plot2(
         ylabel="False Negative Rate",
     )
     g.tight_layout()
-    output_path.parent.mkdir(exist_ok=True, parents=True)
-    plt.savefig(output_path)
+
+    output.mkdir(exist_ok=True, parents=True)
+    figure_path_stem = output.joinpath(key)
+    plt.savefig(figure_path_stem.with_suffix('.svg'))
+    plt.savefig(figure_path_stem.with_suffix('.pdf'))
+    plt.savefig(figure_path_stem.with_suffix('.png'), dpi=300)
 
 
 if __name__ == '__main__':
