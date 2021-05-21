@@ -2,9 +2,9 @@
 
 🪑 Benchmark PyKEEN's negative samplers' false negative rates
 
-## Speed
+## Speed Performance
 
-Run the benchmarks with:
+Run the speed performance benchmarks with:
 
 ```shell
 $ python main.py times
