@@ -10,7 +10,7 @@ Run timing benchmarks with:
 $ python main.py times
 ```
 
-![Times](img/times.svg)
+![Times](img/cthoyt/2207eaef/times.svg)
 
 ## False Negative Rate
 
@@ -20,4 +20,4 @@ Run false negative rate benchmarks with:
 $ python main.py fnr
 ```
 
-![False Negative Rate](img/fnr.svg)
+![False Negative Rate](img/cthoyt/2207eaef/fnr.svg)
