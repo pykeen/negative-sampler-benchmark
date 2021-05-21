@@ -118,7 +118,11 @@ def fnr(
             triples_factory=dataset_instance.training,
             num_negs_per_pos=num_samples,
         )
-        for positive_batch in dataset_instance.training.mapped_triples.split(split_size=batch_size, dim=0):
+        for positive_batch in tqdm(
+            dataset_instance.training.mapped_triples.split(split_size=batch_size, dim=0),
+            unit="batch",
+            unit_scale=True,
+        ):
             negative_batch = sampler.corrupt_batch(positive_batch=positive_batch)
             false_negative_rates = filterer.contains(
                 batch=negative_batch.view(-1, 3)
