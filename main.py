@@ -1,5 +1,6 @@
 """Main script."""
 
+import getpass
 import logging
 import math
 import pathlib
@@ -16,7 +17,8 @@ from torch.utils.benchmark import Timer
 from tqdm import tqdm
 
 import pykeen.version
-from pykeen.datasets import Dataset, datasets as datasets_dict, get_dataset
+from pykeen.datasets import datasets as datasets_dict, get_dataset
+from pykeen.datasets.base import Dataset
 from pykeen.sampling import negative_sampler_resolver
 from pykeen.sampling.filtering import PythonSetFilterer, filterer_resolver
 
@@ -44,6 +46,8 @@ _datasets = [
 ]
 # Order by increasing number of triples
 _datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])
+
+USER = getpass.getuser()
 
 dataset_option = click.option("-d", "--dataset", type=click.Choice(datasets_dict, case_sensitive=False))
 directory_option = click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
@@ -138,6 +142,7 @@ def _time_helper(
             measurement = timer.blocked_autorange()
             data.extend(
                 (
+                    USER,
                     pykeen.version.get_git_hash(),
                     dataset.get_normalized_name(),
                     negative_sampler,
@@ -147,7 +152,7 @@ def _time_helper(
                 )
                 for t in measurement.raw_times
             )
-    df = pd.DataFrame(data=data, columns=["hash", "dataset", "sampler", "batch_size", "batch_id", "time"])
+    df = pd.DataFrame(data=data, columns=["user", "hash", "dataset", "sampler", "batch_size", "batch_id", "time"])
     df.to_csv(output_path, sep="\t", index=False)
     return df
 
@@ -169,7 +174,7 @@ def _plot_times(df: pd.DataFrame, *, key: str, directory: pathlib.Path = plot_ro
         ylabel="time (s)/batch",
     )
     g.tight_layout()
-    title = f'Time Results from {pykeen.version.get_git_hash()}'
+    title = f'Time Results from {USER}/{pykeen.version.get_git_hash()}'
     try:
         branch = pykeen.version.get_git_branch()
         title += f' ({branch})'
@@ -264,6 +269,7 @@ def _fnr_helper(
             ).view(negative_batch.shape[:-1]).float().mean(dim=-1)
             data.extend(
                 (
+                    USER,
                     pykeen.version.get_git_hash(),
                     dataset.get_normalized_name(),
                     negative_sampler,
@@ -272,7 +278,7 @@ def _fnr_helper(
                 )
                 for false_negative_rate in false_negative_rates.tolist()
             )
-    df = pd.DataFrame(data=data, columns=["hash", "dataset", "sampler", "filterer", "fnr"])
+    df = pd.DataFrame(data=data, columns=["user", "hash", "dataset", "sampler", "filterer", "fnr"])
     df.to_csv(output_path, sep="\t", index=False)
     return df
 
@@ -289,7 +295,7 @@ def _plot_fnr(df: pd.DataFrame, *, directory: pathlib.Path, key: str):
         "", "False Negative Rate",
     )
     g.tight_layout()
-    title = f'False Negative Rate Results from {pykeen.version.get_git_hash()}'
+    title = f'False Negative Rate Results from {USER}/{pykeen.version.get_git_hash()}'
     try:
         branch = pykeen.version.get_git_branch()
         title += f' ({branch})'
@@ -305,8 +311,15 @@ def _plot_fnr(df: pd.DataFrame, *, directory: pathlib.Path, key: str):
     plt.savefig(figure_path_stem.with_suffix('.png'), dpi=300)
 
 
-def _prep_dir(directory: pathlib.Path, key: Optional[str] = None, hashed: bool = True) -> pathlib.Path:
+def _prep_dir(
+    directory: pathlib.Path,
+    key: Optional[str] = None,
+    hashed: bool = True,
+    user_marked: bool = True,
+) -> pathlib.Path:
     directory = directory.resolve()
+    if user_marked:
+        directory = directory.joinpath(USER)
     if hashed:
         directory = directory.joinpath(pykeen.version.get_git_hash())
     if key:
@@ -324,6 +337,7 @@ def _iterate_datasets(dataset: Optional[str]) -> Iterable[Dataset]:
     for dataset in it:
         it.set_postfix(dataset=dataset)
         yield get_dataset(dataset=dataset)
+
 
 def make_space_above(axes, topmargin: float = 1.0) -> None:
     """Increase figure size to make topmargin (in inches) space for titles, without changing the axes sizes.
