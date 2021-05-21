@@ -1,14 +1,13 @@
 """Main script."""
 
 import logging
+import math
 import pathlib
-from typing import Iterable, Optional
+from typing import Iterable, Optional, cast
 
 import click
-import math
-import pandas
 import pandas as pd
-import seaborn as seaborn
+import seaborn as sns
 import torch
 from docdata import get_docdata
 from matplotlib import pyplot as plt
@@ -20,13 +19,11 @@ from pykeen.datasets import Dataset, datasets as datasets_dict, get_dataset
 from pykeen.sampling import negative_sampler_resolver
 from pykeen.sampling.filtering import PythonSetFilterer, filterer_resolver
 
+logger = logging.getLogger(__name__)
+
 HERE = pathlib.Path(__file__).resolve().parent
 measurement_root = HERE.joinpath("data")
 plot_root = HERE.joinpath("img")
-default_time_plot_path = plot_root.joinpath("times.pdf")
-default_fnr_plot_path = plot_root.joinpath("fnr.pdf")
-
-logger = logging.getLogger(__name__)
 
 #: Datasets to benchmark. Only pick pre-stratified ones
 _datasets = [
@@ -46,6 +43,8 @@ _datasets = [
 ]
 # Order by increasing number of triples
 _datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])
+
+sns.set_style('whitegrid')
 
 
 @click.group()
@@ -131,13 +130,13 @@ def _time_helper(
                 (batch_size, batch_id, t, negative_sampler, dataset.get_normalized_name())
                 for t in measurement.raw_times
             )
-    df = pandas.DataFrame(data=data, columns=["batch_size", "batch_id", "time", "sampler", "dataset"])
+    df = pd.DataFrame(data=data, columns=["batch_size", "batch_id", "time", "sampler", "dataset"])
     df.to_csv(output_path, sep="\t", index=False)
     return df
 
 
 def _plot_times(df: pd.DataFrame, directory: pathlib.Path = plot_root, key: str = 'times'):
-    g = seaborn.relplot(
+    g = sns.relplot(
         data=df,
         x="batch_size",
         y="time",
@@ -207,14 +206,14 @@ def _fnr_helper(
 
     # create index structure for existence check
     filterer = PythonSetFilterer(
-        mapped_triples=torch.cat(
+        mapped_triples=cast(torch.LongTensor, torch.cat(
             [
                 dataset.training.mapped_triples,
                 dataset.validation.mapped_triples,
                 # dataset_instance.testing, # TODO: should this be used?
             ],
             dim=0,
-        ),
+        )),
     )
     filterer_key = filterer_resolver.normalize_inst(filterer)
     data = []
@@ -243,13 +242,13 @@ def _fnr_helper(
                 )
                 for false_negative_rate in false_negative_rates.tolist()
             )
-    df = pandas.DataFrame(data=data, columns=["dataset", "sampler", "filterer", "fnr"])
+    df = pd.DataFrame(data=data, columns=["dataset", "sampler", "filterer", "fnr"])
     df.to_csv(output_path, sep="\t", index=False)
     return df
 
 
 def _plot_fnr(df: pd.DataFrame, directory: pathlib.Path, key: str = 'fnr'):
-    g = seaborn.catplot(
+    g = sns.catplot(
         data=df,
         x="sampler",
         y="fnr",
