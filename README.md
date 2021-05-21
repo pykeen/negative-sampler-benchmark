@@ -3,8 +3,12 @@
 🪑 Benchmark PyKEEN's negative samplers' false negative rates. Run with:
 
 ```shell
-$ python main.py times
+$ python -m pip install -r requirements.txt
+$ python main.py
 ```
+
+It will keep track of your username via `getpass` and the git hash if you
+have a development version of PyKEEN installed.
 
 ## Speed Performance
 
