@@ -2,9 +2,9 @@
 
 🪑 Benchmark PyKEEN's negative samplers' false negative rates
 
-## Times
+## Speed
 
-Run timing benchmarks with:
+Run the benchmarks with:
 
 ```shell
 $ python main.py times

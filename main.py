@@ -45,7 +45,7 @@ _datasets = [
     'dbpedia50',
 ]
 # Order by increasing number of triples
-_datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])
+_datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])[:10]
 
 USER = getpass.getuser()
 
@@ -246,12 +246,14 @@ def _fnr_helper(
             triples_factory=dataset.training,
             num_negs_per_pos=num_samples,
         )
-        for positive_batch in tqdm(
+        positive_batches = tqdm(
             dataset.training.mapped_triples.split(split_size=batch_size, dim=0),
             unit="batch",
             unit_scale=True,
             desc=f'FNR {sampler.get_normalized_name()}, {filterer_key}',
-        ):
+        )
+        for positive_batch in positive_batches:
+            positive_batches.set_postfix(batch_size=batch_size, dataset=dataset.get_normalized_name())
             negative_batch = sampler.corrupt_batch(positive_batch=positive_batch)
             false_negative_rates = filterer.contains(
                 batch=negative_batch.view(-1, 3)
