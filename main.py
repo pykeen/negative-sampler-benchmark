@@ -4,6 +4,7 @@ import getpass
 import logging
 import math
 import pathlib
+from itertools import product
 from typing import Iterable, Optional, cast
 
 import click
@@ -20,78 +21,77 @@ import pykeen.version
 from pykeen.datasets import datasets as datasets_dict, get_dataset
 from pykeen.datasets.base import Dataset
 from pykeen.sampling import negative_sampler_resolver
-from pykeen.sampling.filtering import PythonSetFilterer, filterer_resolver
+from pykeen.sampling.filtering import PythonSetFilterer
 
 logger = logging.getLogger(__name__)
 
+USER = getpass.getuser()
+GIT_HASH = pykeen.get_git_hash()
+
 HERE = pathlib.Path(__file__).resolve().parent
-measurement_root = HERE.joinpath("data")
-plot_root = HERE.joinpath("img")
+DEFAULT_DIRECTORY = HERE.joinpath("data", USER, GIT_HASH)
 
 #: Datasets to benchmark. Only pick pre-stratified ones
 _datasets = [
-    'kinships',
+    'countries',
     'nations',
     'umls',
-    'countries',
-    'codexsmall',
-    'codexmedium',
-    'codexlarge',
-    'fb15k',
-    'fb15k237',
-    'wn18',
-    'wn18rr',
-    'yago310',
+    'kinships',
     'dbpedia50',
+    'codexsmall',
+    'wn18rr',
+    'wn18',
+    'codexmedium',
+    'fb15k237',
+    # 'fb15k',
+    # 'codexlarge',
+    # 'yago310',
 ]
 # Order by increasing number of triples
-_datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])
+_datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])[:2]
 
-USER = getpass.getuser()
-
-dataset_option = click.option("-d", "--dataset", type=click.Choice(datasets_dict, case_sensitive=False))
-directory_option = click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
-plot_directory_option = click.option("--plot-directory", type=pathlib.Path, default=plot_root)
-no_hashed_option = click.option("--no-hashed", is_flag=True)
-
-sns.set_style('whitegrid')
+TIMES_KEY = 'times'
+FNR_KEY = 'fnr'
+TIMES_COLUMNS = ["batch_size", "batch_id", "time"]
+FNR_COLUMNS = ['fnr']
 
 
-@click.group()
-def benchmark():
-    """Benchmark negative sampling."""
-
-
-@benchmark.command()
-@dataset_option
-@click.option("-b", "--num-random-batches", type=int, default=20)
-@directory_option
-@plot_directory_option
+@click.command()
+@click.option("-d", "--dataset", type=click.Choice(datasets_dict, case_sensitive=False))
+@click.option("--num-random-batches", type=int, default=20)
+@click.option("--batch-size", type=int, default=32)
+@click.option("-n", "--num-samples", type=int, default=4096)  # TODO: Determine this based on dataset?
+@click.option("-o", "--directory", type=pathlib.Path, default=DEFAULT_DIRECTORY)
 @force_option
-@no_hashed_option
 @verbose_option
-def time(
-    dataset: str,
+def benchmark(
+    dataset: Optional[str],
     num_random_batches: int,
+    batch_size: int,
+    num_samples: int,
     directory: pathlib.Path,
-    plot_directory: pathlib.Path,
     force: bool,
-    no_hashed: bool,
 ) -> None:
-    """Benchmark sampling time."""
-    key = 'times'
-    directory = _prep_dir(directory, key=key, hashed=not no_hashed)
-    plot_directory = _prep_dir(plot_directory, hashed=not no_hashed)
-
-    dfs = []
+    """Benchmark negative sampling."""
+    times_dfs, fnr_dfs = [], []
     for dataset_instance in _iterate_datasets(dataset):
-        dfs.append(_time_helper(
+        times_dfs.append(_time_helper(
             dataset_instance,
-            directory=directory,
+            directory=directory.joinpath(TIMES_KEY),
             num_random_batches=num_random_batches,
             force=force,
         ))
-    _plot_times(pd.concat(dfs), key=key, directory=plot_directory)
+        fnr_dfs.append(_fnr_helper(
+            dataset_instance,
+            directory=directory.joinpath(FNR_KEY),
+            num_samples=num_samples,
+            batch_size=batch_size,
+            force=force,
+        ))
+
+    sns.set_style('whitegrid')
+    _plot_times(pd.concat(times_dfs), key=TIMES_KEY, directory=directory)
+    _plot_fnr(pd.concat(fnr_dfs), key=FNR_KEY, directory=directory)
 
 
 def _time_helper(
@@ -101,58 +101,57 @@ def _time_helper(
     num_random_batches: int,
     force: bool = False,
 ) -> pd.DataFrame:
-    output_path = directory.joinpath(dataset.get_normalized_name()).with_suffix('.tsv')
-    if output_path.exists() and not force:
-        tqdm.write(f'Using pre-calculated time results for {dataset.get_normalized_name()}')
-        return pd.read_csv(output_path, sep='\t')
+    dataset_directory = directory.joinpath(dataset.get_normalized_name())
+    dataset_directory.mkdir(exist_ok=True, parents=True)
 
     batch_sizes = [2 ** i for i in range(1, min(16, int(math.log2(dataset.training.num_triples))))]
     logger.info(f"Evaluating batch sizes {batch_sizes} for dataset {dataset.get_normalized_name()}")
 
-    data = []
-    for negative_sampler in negative_sampler_resolver.lookup_dict.keys():
-        sampler = negative_sampler_resolver.make(query=negative_sampler, triples_factory=dataset.training)
-        progress = tqdm(
-            (
-                (b, i)
-                for b in batch_sizes
-                for i in range(num_random_batches)
-            ),
-            unit_scale=True,
-            desc=f"Time {negative_sampler}",
-            total=len(batch_sizes) * num_random_batches,
-        )
-
-        for batch_size, batch_id in progress:
-            progress.set_postfix(batch_size=batch_size, dataset=dataset.get_normalized_name())
-            positive_batch_idx = torch.randperm(dataset.training.num_triples)[:batch_size]
-            positive_batch = dataset.training.mapped_triples[positive_batch_idx]
-            timer = Timer(
-                stmt="sampler.corrupt_batch(positive_batch=positive_batch)",
-                globals=dict(
-                    sampler=sampler,
-                    positive_batch=positive_batch,
-                ),
+    dfs = []
+    for negative_sampler_cls in negative_sampler_resolver:
+        path = dataset_directory.joinpath(negative_sampler_cls.get_normalized_name()).with_suffix('.tsv.gz')
+        if path.exists() and not force:
+            df = pd.read_csv(path, sep='\t')
+        else:
+            negative_sampler = negative_sampler_resolver.make(
+                query=negative_sampler_cls,
+                triples_factory=dataset.training,
             )
-            measurement = timer.blocked_autorange()
-            data.extend(
-                (
-                    USER,
-                    pykeen.version.get_git_hash(),
-                    dataset.get_normalized_name(),
-                    negative_sampler,
-                    batch_size,
-                    batch_id,
-                    t,
+            progress = tqdm(
+                product(batch_sizes, range(num_random_batches)),
+                unit_scale=True,
+                desc=f"Time {negative_sampler.get_normalized_name()}",
+                total=len(batch_sizes) * num_random_batches,
+            )
+            data = []
+            for batch_size, batch_id in progress:
+                progress.set_postfix(batch_size=batch_size, dataset=dataset.get_normalized_name())
+                positive_batch_idx = torch.randperm(dataset.training.num_triples)[:batch_size]
+                positive_batch = dataset.training.mapped_triples[positive_batch_idx]
+                timer = Timer(
+                    stmt="sampler.corrupt_batch(positive_batch=positive_batch)",
+                    globals=dict(
+                        sampler=negative_sampler,
+                        positive_batch=positive_batch,
+                    ),
                 )
-                for t in measurement.raw_times
-            )
-    df = pd.DataFrame(data=data, columns=["user", "hash", "dataset", "sampler", "batch_size", "batch_id", "time"])
-    df.to_csv(output_path, sep="\t", index=False)
-    return df
+                measurement = timer.blocked_autorange()
+                data.extend(
+                    (batch_size, batch_id, t)
+                    for t in measurement.raw_times
+                )
+            df = pd.DataFrame(data=data, columns=TIMES_COLUMNS)
+            df.to_csv(path, sep='\t', index=False)
+
+        df['dataset'] = dataset.get_normalized_name()
+        df['sampler'] = negative_sampler_cls.get_normalized_name()
+        df = df[['dataset', 'sampler', *TIMES_COLUMNS]]
+        dfs.append(df)
+
+    return pd.concat(dfs)
 
 
-def _plot_times(df: pd.DataFrame, *, key: str, directory: pathlib.Path = plot_root):
+def _plot_times(df: pd.DataFrame, *, key: str, directory: pathlib.Path):
     g = sns.relplot(
         data=df,
         x="batch_size",
@@ -166,8 +165,8 @@ def _plot_times(df: pd.DataFrame, *, key: str, directory: pathlib.Path = plot_ro
         # estimator=numpy.median,
     ).set(
         xscale="log",
-        xlabel="batch size",
-        ylabel="time (s)/batch",
+        xlabel="Batch Size",
+        ylabel="Seconds Per Batch",
     )
     g.tight_layout()
     g.fig.suptitle(_prep_title('Time Results'), fontsize=22, y=0.98)
@@ -180,41 +179,6 @@ def _plot_times(df: pd.DataFrame, *, key: str, directory: pathlib.Path = plot_ro
     plt.savefig(figure_path_stem.with_suffix('.png'), dpi=300)
 
 
-@benchmark.command()
-@dataset_option
-@click.option("-b", "--batch_size", type=int, default=32)
-@click.option("-n", "--num-samples", type=int, default=4096)  # TODO: Determine this based on dataset?
-@directory_option
-@plot_directory_option
-@verbose_option
-@no_hashed_option
-@force_option
-def fnr(
-    dataset: str,
-    batch_size: int,
-    num_samples: int,
-    directory: pathlib.Path,
-    plot_directory: pathlib.Path,
-    force: bool,
-    no_hashed: bool,
-):
-    """Estimate false negative rate."""
-    key = 'fnr'
-    directory = _prep_dir(directory, key=key, hashed=not no_hashed)
-    plot_directory = _prep_dir(plot_directory, hashed=not no_hashed)
-
-    dfs = []
-    for dataset_instance in _iterate_datasets(dataset):
-        dfs.append(_fnr_helper(
-            dataset_instance,
-            directory=directory,
-            num_samples=num_samples,
-            batch_size=batch_size,
-            force=force,
-        ))
-    _plot_fnr(pd.concat(dfs), directory=plot_directory, key=key)
-
-
 def _fnr_helper(
     dataset: Dataset,
     *,
@@ -223,10 +187,8 @@ def _fnr_helper(
     batch_size: int,
     force: bool = False,
 ) -> pd.DataFrame:
-    output_path = directory.joinpath(dataset.get_normalized_name()).with_suffix('.tsv')
-    if output_path.exists() and not force:
-        click.secho(f'Using pre-calculated fnr results for {dataset.get_normalized_name()}')
-        return pd.read_csv(output_path, sep='\t')
+    dataset_directory = directory.joinpath(dataset.get_normalized_name())
+    dataset_directory.mkdir(exist_ok=True, parents=True)
 
     # create index structure for existence check
     filterer = PythonSetFilterer(
@@ -239,40 +201,40 @@ def _fnr_helper(
             dim=0,
         )),
     )
-    filterer_key = filterer_resolver.normalize_inst(filterer)
-    data = []
-    for negative_sampler in negative_sampler_resolver.lookup_dict.keys():
-        sampler = negative_sampler_resolver.make(
-            query=negative_sampler,
-            triples_factory=dataset.training,
-            num_negs_per_pos=num_samples,
-        )
-        positive_batches = tqdm(
-            dataset.training.mapped_triples.split(split_size=batch_size, dim=0),
-            unit="batch",
-            unit_scale=True,
-            desc=f'FNR {sampler.get_normalized_name()}, {filterer_key}',
-        )
-        for positive_batch in positive_batches:
-            positive_batches.set_postfix(batch_size=batch_size, dataset=dataset.get_normalized_name())
-            negative_batch = sampler.corrupt_batch(positive_batch=positive_batch)
-            false_negative_rates = filterer.contains(
-                batch=negative_batch.view(-1, 3)
-            ).view(negative_batch.shape[:-1]).float().mean(dim=-1)
-            data.extend(
-                (
-                    USER,
-                    pykeen.version.get_git_hash(),
-                    dataset.get_normalized_name(),
-                    negative_sampler,
-                    filterer_key,
-                    false_negative_rate,
-                )
-                for false_negative_rate in false_negative_rates.tolist()
+    dfs = []
+    for negative_sampler_cls in negative_sampler_resolver:
+        path = dataset_directory.joinpath(negative_sampler_cls.get_normalized_name()).with_suffix('.tsv.gz')
+        if path.exists() and not force:
+            df = pd.read_csv(path, sep='\t')
+        else:
+            sampler = negative_sampler_resolver.make(
+                query=negative_sampler_cls,
+                triples_factory=dataset.training,
+                num_negs_per_pos=num_samples,
             )
-    df = pd.DataFrame(data=data, columns=["user", "hash", "dataset", "sampler", "filterer", "fnr"])
-    df.to_csv(output_path, sep="\t", index=False)
-    return df
+            positive_batches = tqdm(
+                dataset.training.mapped_triples.split(split_size=batch_size, dim=0),
+                unit="batch",
+                unit_scale=True,
+                desc=f'FNR {sampler.get_normalized_name()}',
+            )
+            data = []
+            for positive_batch in positive_batches:
+                positive_batches.set_postfix(batch_size=batch_size, dataset=dataset.get_normalized_name())
+                negative_batch = sampler.corrupt_batch(positive_batch=positive_batch)
+                false_negative_rates = filterer.contains(
+                    batch=negative_batch.view(-1, 3)
+                ).view(negative_batch.shape[:-1]).float().mean(dim=-1)
+                data.extend(false_negative_rates.tolist())
+            df = pd.DataFrame(data, columns=FNR_COLUMNS)
+            df.to_csv(path, sep='\t', index=False)
+
+        df['dataset'] = dataset.get_normalized_name()
+        df['sampler'] = negative_sampler_cls.get_normalized_name()
+        df = df[['dataset', 'sampler', *FNR_COLUMNS]]
+        dfs.append(df)
+
+    return pd.concat(dfs)
 
 
 def _plot_fnr(df: pd.DataFrame, *, directory: pathlib.Path, key: str):
@@ -303,23 +265,6 @@ def _prep_title(s: str) -> str:
     if (branch := pykeen.version.get_git_branch()) is not None:
         title += f' ({branch})'
     return title
-
-
-def _prep_dir(
-    directory: pathlib.Path,
-    key: Optional[str] = None,
-    hashed: bool = True,
-    user_marked: bool = True,
-) -> pathlib.Path:
-    directory = directory.resolve()
-    if user_marked:
-        directory = directory.joinpath(USER)
-    if hashed:
-        directory = directory.joinpath(pykeen.version.get_git_hash())
-    if key:
-        directory = directory.joinpath(key)
-    directory.mkdir(exist_ok=True, parents=True)
-    return directory
 
 
 def _iterate_datasets(dataset: Optional[str]) -> Iterable[Dataset]:
