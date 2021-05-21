@@ -160,6 +160,7 @@ def _plot_times(df: pd.DataFrame, *, key: str, directory: pathlib.Path = plot_ro
         hue="sampler",
         kind="line",
         col="dataset",
+        height=3.5,
         col_wrap=4 if df.dataset.nunique() > 4 else None,
         # ci=100,
         # estimator=numpy.median,
@@ -281,6 +282,7 @@ def _plot_fnr(df: pd.DataFrame, *, directory: pathlib.Path, key: str):
         y="fnr",
         col="dataset",
         kind="box",
+        height=3.5,
         col_wrap=4 if df.dataset.nunique() > 4 else None,
     ).set_axis_labels(
         "", "False Negative Rate",
@@ -291,7 +293,7 @@ def _plot_fnr(df: pd.DataFrame, *, directory: pathlib.Path, key: str):
 
     directory.mkdir(exist_ok=True, parents=True)
     figure_path_stem = directory.joinpath(key)
-    plt.savefig(figure_path_stem.with_suffix('.svg'))
+    # plt.savefig(figure_path_stem.with_suffix('.svg'))  # no SVG because too many outliers
     plt.savefig(figure_path_stem.with_suffix('.pdf'))
     plt.savefig(figure_path_stem.with_suffix('.png'), dpi=300)
 
