@@ -174,13 +174,7 @@ def _plot_times(df: pd.DataFrame, *, key: str, directory: pathlib.Path = plot_ro
         ylabel="time (s)/batch",
     )
     g.tight_layout()
-    title = f'Time Results from {USER}/{pykeen.version.get_git_hash()}'
-    try:
-        branch = pykeen.version.get_git_branch()
-        title += f' ({branch})'
-    except AttributeError:
-        pass
-    g.fig.suptitle(title, fontsize=18, y=0.98)
+    g.fig.suptitle(_prep_title('Time Results'), fontsize=18, y=0.98)
     make_space_above(g.axes, topmargin=0.75)
 
     directory.mkdir(exist_ok=True, parents=True)
@@ -295,13 +289,7 @@ def _plot_fnr(df: pd.DataFrame, *, directory: pathlib.Path, key: str):
         "", "False Negative Rate",
     )
     g.tight_layout()
-    title = f'False Negative Rate Results from {USER}/{pykeen.version.get_git_hash()}'
-    try:
-        branch = pykeen.version.get_git_branch()
-        title += f' ({branch})'
-    except AttributeError:
-        pass
-    g.fig.suptitle(title, fontsize=18, y=0.98)
+    g.fig.suptitle(_prep_title('False Negative Rate Results'), fontsize=18, y=0.98)
     make_space_above(g.axes, topmargin=0.75)
 
     directory.mkdir(exist_ok=True, parents=True)
@@ -309,6 +297,13 @@ def _plot_fnr(df: pd.DataFrame, *, directory: pathlib.Path, key: str):
     plt.savefig(figure_path_stem.with_suffix('.svg'))
     plt.savefig(figure_path_stem.with_suffix('.pdf'))
     plt.savefig(figure_path_stem.with_suffix('.png'), dpi=300)
+
+
+def _prep_title(s: str) -> str:
+    title = f'{s} from {USER}/{pykeen.version.get_version(with_git_hash=True)}'
+    if (branch := pykeen.version.get_git_branch()) is not None:
+        title += f' ({branch})'
+    return title
 
 
 def _prep_dir(
