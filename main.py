@@ -45,7 +45,7 @@ _datasets = [
     'dbpedia50',
 ]
 # Order by increasing number of triples
-_datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])[:10]
+_datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])
 
 USER = getpass.getuser()
 
@@ -169,8 +169,8 @@ def _plot_times(df: pd.DataFrame, *, key: str, directory: pathlib.Path = plot_ro
         ylabel="time (s)/batch",
     )
     g.tight_layout()
-    g.fig.suptitle(_prep_title('Time Results'), fontsize=18, y=0.98)
-    make_space_above(g.axes, topmargin=0.75)
+    g.fig.suptitle(_prep_title('Time Results'), fontsize=22, y=0.98)
+    make_space_above(g.axes, topmargin=1.0)
 
     directory.mkdir(exist_ok=True, parents=True)
     figure_path_stem = directory.joinpath(key)
@@ -286,8 +286,8 @@ def _plot_fnr(df: pd.DataFrame, *, directory: pathlib.Path, key: str):
         "", "False Negative Rate",
     )
     g.tight_layout()
-    g.fig.suptitle(_prep_title('False Negative Rate Results'), fontsize=18, y=0.98)
-    make_space_above(g.axes, topmargin=0.75)
+    g.fig.suptitle(_prep_title('False Negative Rate Results'), fontsize=22, y=0.98)
+    make_space_above(g.axes, topmargin=1.0)
 
     directory.mkdir(exist_ok=True, parents=True)
     figure_path_stem = directory.joinpath(key)
