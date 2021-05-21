@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 """Main script."""
 
 import getpass
@@ -48,7 +50,7 @@ _datasets = [
     # 'yago310',
 ]
 # Order by increasing number of triples
-_datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])[:2]
+_datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])
 
 TIMES_KEY = 'times'
 FNR_KEY = 'fnr'
@@ -108,7 +110,12 @@ def _time_helper(
     logger.info(f"Evaluating batch sizes {batch_sizes} for dataset {dataset.get_normalized_name()}")
 
     dfs = []
-    for negative_sampler_cls in negative_sampler_resolver:
+    sampler_it = tqdm(list(negative_sampler_resolver), desc='Sampler', leave=False)
+    for negative_sampler_cls in sampler_it:
+        sampler_it.set_postfix(
+            sampler=negative_sampler_cls.get_normalized_name(),
+            dataset=dataset.get_normalized_name(),
+        )
         path = dataset_directory.joinpath(negative_sampler_cls.get_normalized_name()).with_suffix('.tsv.gz')
         if path.exists() and not force:
             df = pd.read_csv(path, sep='\t')
@@ -120,12 +127,18 @@ def _time_helper(
             progress = tqdm(
                 product(batch_sizes, range(num_random_batches)),
                 unit_scale=True,
-                desc=f"Time {negative_sampler.get_normalized_name()}",
+                desc="Batch",
                 total=len(batch_sizes) * num_random_batches,
+                leave=False,
             )
             data = []
             for batch_size, batch_id in progress:
-                progress.set_postfix(batch_size=batch_size, dataset=dataset.get_normalized_name())
+                progress.set_postfix(
+                    size=batch_size,
+                    id=batch_id,
+                    sampler=negative_sampler_cls.get_normalized_name(),
+                    dataset=dataset.get_normalized_name(),
+                )
                 positive_batch_idx = torch.randperm(dataset.training.num_triples)[:batch_size]
                 positive_batch = dataset.training.mapped_triples[positive_batch_idx]
                 timer = Timer(
@@ -202,7 +215,12 @@ def _fnr_helper(
         )),
     )
     dfs = []
-    for negative_sampler_cls in negative_sampler_resolver:
+    sampler_it = tqdm(list(negative_sampler_resolver), desc='Sampler', leave=False)
+    for negative_sampler_cls in sampler_it:
+        sampler_it.set_postfix(
+            sampler=negative_sampler_cls.get_normalized_name(),
+            dataset=dataset.get_normalized_name(),
+        )
         path = dataset_directory.joinpath(negative_sampler_cls.get_normalized_name()).with_suffix('.tsv.gz')
         if path.exists() and not force:
             df = pd.read_csv(path, sep='\t')
@@ -216,11 +234,15 @@ def _fnr_helper(
                 dataset.training.mapped_triples.split(split_size=batch_size, dim=0),
                 unit="batch",
                 unit_scale=True,
-                desc=f'FNR {sampler.get_normalized_name()}',
+                desc='Batch',
             )
             data = []
             for positive_batch in positive_batches:
-                positive_batches.set_postfix(batch_size=batch_size, dataset=dataset.get_normalized_name())
+                positive_batches.set_postfix(
+                    batch_size=batch_size,
+                    sampler=negative_sampler_cls.get_normalized_name(),
+                    dataset=dataset.get_normalized_name(),
+                )
                 negative_batch = sampler.corrupt_batch(positive_batch=positive_batch)
                 false_negative_rates = filterer.contains(
                     batch=negative_batch.view(-1, 3)
@@ -272,7 +294,7 @@ def _iterate_datasets(dataset: Optional[str]) -> Iterable[Dataset]:
         _dataset_list = [dataset]
     else:
         _dataset_list = _datasets
-    it = tqdm(_dataset_list, desc='Dataset', disable=True)
+    it = tqdm(_dataset_list, desc='Dataset')
     for dataset in it:
         it.set_postfix(dataset=dataset)
         yield get_dataset(dataset=dataset)
