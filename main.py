@@ -58,13 +58,8 @@ sns.set_style('whitegrid')
 
 
 @click.group()
-def main():
-    """The main entry point."""
-
-
-@main.group()
 def benchmark():
-    """Run benchmarking."""
+    """Benchmark negative sampling."""
 
 
 @benchmark.command()
@@ -354,4 +349,4 @@ def make_space_above(axes, topmargin: float = 1.0) -> None:
 
 
 if __name__ == '__main__':
-    main()
+    benchmark()
