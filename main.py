@@ -13,8 +13,9 @@ from docdata import get_docdata
 from matplotlib import pyplot as plt
 from more_click import force_option, verbose_option
 from torch.utils.benchmark import Timer
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
+import pykeen.version
 from pykeen.datasets import Dataset, datasets as datasets_dict, get_dataset
 from pykeen.sampling import negative_sampler_resolver
 from pykeen.sampling.filtering import PythonSetFilterer, filterer_resolver
@@ -44,6 +45,11 @@ _datasets = [
 # Order by increasing number of triples
 _datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])
 
+dataset_option = click.option("-d", "--dataset", type=click.Choice(datasets_dict, case_sensitive=False))
+directory_option = click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
+plot_directory_option = click.option("--plot-directory", type=pathlib.Path, default=plot_root)
+no_hashed_option = click.option("--no-hashed", is_flag=True)
+
 sns.set_style('whitegrid')
 
 
@@ -58,22 +64,26 @@ def benchmark():
 
 
 @benchmark.command()
-@click.option("-d", "--dataset", type=click.Choice(datasets_dict, case_sensitive=False))
+@dataset_option
 @click.option("-b", "--num-random-batches", type=int, default=20)
-@click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
-@click.option("--plot-directory", type=pathlib.Path, default=plot_root)
+@directory_option
+@plot_directory_option
 @force_option
+@no_hashed_option
 @verbose_option
 def time(
     dataset: str,
     num_random_batches: int,
     directory: pathlib.Path,
     plot_directory: pathlib.Path,
-    force: bool
+    force: bool,
+    no_hashed: bool,
 ) -> None:
     """Benchmark sampling time."""
-    directory = directory.resolve().joinpath('times')
-    directory.mkdir(exist_ok=True, parents=True)
+    key = 'times'
+    directory = _prep_dir(directory, key=key, hashed=not no_hashed)
+    plot_directory = _prep_dir(plot_directory, hashed=not no_hashed)
+
     dfs = []
     for dataset_instance in _iterate_datasets(dataset):
         dfs.append(_time_helper(
@@ -82,7 +92,7 @@ def time(
             num_random_batches=num_random_batches,
             force=force,
         ))
-    _plot_times(pd.concat(dfs), directory=plot_directory)
+    _plot_times(pd.concat(dfs), key=key, directory=plot_directory)
 
 
 def _time_helper(
@@ -115,7 +125,7 @@ def _time_helper(
         )
 
         for batch_size, batch_id in progress:
-            progress.set_postfix(batch_size=batch_size)
+            progress.set_postfix(batch_size=batch_size, dataset=dataset.get_normalized_name())
             positive_batch_idx = torch.randperm(dataset.training.num_triples)[:batch_size]
             positive_batch = dataset.training.mapped_triples[positive_batch_idx]
             timer = Timer(
@@ -127,15 +137,22 @@ def _time_helper(
             )
             measurement = timer.blocked_autorange()
             data.extend(
-                (batch_size, batch_id, t, negative_sampler, dataset.get_normalized_name())
+                (
+                    pykeen.version.get_git_hash(),
+                    dataset.get_normalized_name(),
+                    negative_sampler,
+                    batch_size,
+                    batch_id,
+                    t,
+                )
                 for t in measurement.raw_times
             )
-    df = pd.DataFrame(data=data, columns=["batch_size", "batch_id", "time", "sampler", "dataset"])
+    df = pd.DataFrame(data=data, columns=["hash", "dataset", "sampler", "batch_size", "batch_id", "time"])
     df.to_csv(output_path, sep="\t", index=False)
     return df
 
 
-def _plot_times(df: pd.DataFrame, directory: pathlib.Path = plot_root, key: str = 'times'):
+def _plot_times(df: pd.DataFrame, *, key: str, directory: pathlib.Path = plot_root):
     g = sns.relplot(
         data=df,
         x="batch_size",
@@ -152,6 +169,14 @@ def _plot_times(df: pd.DataFrame, directory: pathlib.Path = plot_root, key: str 
         ylabel="time (s)/batch",
     )
     g.tight_layout()
+    title = f'Time Results from {pykeen.version.get_git_hash()}'
+    try:
+        branch = pykeen.version.get_git_branch()
+        title += f' ({branch})'
+    except AttributeError:
+        pass
+    g.fig.suptitle(title, fontsize=18, y=0.98)
+    make_space_above(g.axes, topmargin=0.75)
 
     directory.mkdir(exist_ok=True, parents=True)
     figure_path_stem = directory.joinpath(key)
@@ -161,12 +186,13 @@ def _plot_times(df: pd.DataFrame, directory: pathlib.Path = plot_root, key: str 
 
 
 @benchmark.command()
-@click.option("-d", "--dataset", type=click.Choice(datasets_dict, case_sensitive=False))
+@dataset_option
 @click.option("-b", "--batch_size", type=int, default=32)
 @click.option("-n", "--num-samples", type=int, default=4096)  # TODO: Determine this based on dataset?
-@click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
-@click.option("--plot-directory", type=pathlib.Path, default=plot_root)
+@directory_option
+@plot_directory_option
 @verbose_option
+@no_hashed_option
 @force_option
 def fnr(
     dataset: str,
@@ -175,10 +201,13 @@ def fnr(
     directory: pathlib.Path,
     plot_directory: pathlib.Path,
     force: bool,
+    no_hashed: bool,
 ):
     """Estimate false negative rate."""
-    directory = directory.resolve().joinpath('fnr')
-    directory.mkdir(exist_ok=True, parents=True)
+    key = 'fnr'
+    directory = _prep_dir(directory, key=key, hashed=not no_hashed)
+    plot_directory = _prep_dir(plot_directory, hashed=not no_hashed)
+
     dfs = []
     for dataset_instance in _iterate_datasets(dataset):
         dfs.append(_fnr_helper(
@@ -188,7 +217,7 @@ def fnr(
             batch_size=batch_size,
             force=force,
         ))
-    _plot_fnr(pd.concat(dfs), plot_directory)
+    _plot_fnr(pd.concat(dfs), directory=plot_directory, key=key)
 
 
 def _fnr_helper(
@@ -235,6 +264,7 @@ def _fnr_helper(
             ).view(negative_batch.shape[:-1]).float().mean(dim=-1)
             data.extend(
                 (
+                    pykeen.version.get_git_hash(),
                     dataset.get_normalized_name(),
                     negative_sampler,
                     filterer_key,
@@ -242,12 +272,12 @@ def _fnr_helper(
                 )
                 for false_negative_rate in false_negative_rates.tolist()
             )
-    df = pd.DataFrame(data=data, columns=["dataset", "sampler", "filterer", "fnr"])
+    df = pd.DataFrame(data=data, columns=["hash", "dataset", "sampler", "filterer", "fnr"])
     df.to_csv(output_path, sep="\t", index=False)
     return df
 
 
-def _plot_fnr(df: pd.DataFrame, directory: pathlib.Path, key: str = 'fnr'):
+def _plot_fnr(df: pd.DataFrame, *, directory: pathlib.Path, key: str):
     g = sns.catplot(
         data=df,
         x="sampler",
@@ -259,6 +289,14 @@ def _plot_fnr(df: pd.DataFrame, directory: pathlib.Path, key: str = 'fnr'):
         "", "False Negative Rate",
     )
     g.tight_layout()
+    title = f'False Negative Rate Results from {pykeen.version.get_git_hash()}'
+    try:
+        branch = pykeen.version.get_git_branch()
+        title += f' ({branch})'
+    except AttributeError:
+        pass
+    g.fig.suptitle(title, fontsize=18, y=0.98)
+    make_space_above(g.axes, topmargin=0.75)
 
     directory.mkdir(exist_ok=True, parents=True)
     figure_path_stem = directory.joinpath(key)
@@ -267,15 +305,43 @@ def _plot_fnr(df: pd.DataFrame, directory: pathlib.Path, key: str = 'fnr'):
     plt.savefig(figure_path_stem.with_suffix('.png'), dpi=300)
 
 
+def _prep_dir(directory: pathlib.Path, key: Optional[str] = None, hashed: bool = True) -> pathlib.Path:
+    directory = directory.resolve()
+    if hashed:
+        directory = directory.joinpath(pykeen.version.get_git_hash())
+    if key:
+        directory = directory.joinpath(key)
+    directory.mkdir(exist_ok=True, parents=True)
+    return directory
+
+
 def _iterate_datasets(dataset: Optional[str]) -> Iterable[Dataset]:
     if dataset:
         _dataset_list = [dataset]
     else:
         _dataset_list = _datasets
-    it = tqdm(_dataset_list, desc='Dataset')
+    it = tqdm(_dataset_list, desc='Dataset', disable=True)
     for dataset in it:
         it.set_postfix(dataset=dataset)
         yield get_dataset(dataset=dataset)
+
+def make_space_above(axes, topmargin: float = 1.0) -> None:
+    """Increase figure size to make topmargin (in inches) space for titles, without changing the axes sizes.
+
+    :param axes: The array of axes.
+    :param topmargin: The margin (in inches) to impose on the top of the figure.
+
+    .. seealso:: Credit to https://stackoverflow.com/a/55768955/5775947
+    """
+    fig = axes.flatten()[0].figure
+    s = fig.subplotpars
+    width, height = fig.get_size_inches()
+
+    fig_height = height - (1.0 - s.top) * height + topmargin
+    fig.subplots_adjust(
+        bottom=s.bottom * height / fig_height, top=1 - topmargin / fig_height
+    )
+    fig.set_figheight(fig_height)
 
 
 if __name__ == '__main__':
