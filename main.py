@@ -6,14 +6,13 @@ from typing import Iterable, Optional
 
 import click
 import math
-import more_click
 import pandas
 import pandas as pd
 import seaborn as seaborn
 import torch
 from docdata import get_docdata
 from matplotlib import pyplot as plt
-from more_click import force_option
+from more_click import force_option, verbose_option
 from torch.utils.benchmark import Timer
 from tqdm.auto import tqdm
 
@@ -63,19 +62,28 @@ def benchmark():
 @click.option("-d", "--dataset", type=click.Choice(datasets_dict, case_sensitive=False))
 @click.option("-b", "--num-random-batches", type=int, default=20)
 @click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
+@click.option("--plot-directory", type=pathlib.Path, default=plot_root)
 @force_option
-@more_click.verbose_option
+@verbose_option
 def time(
     dataset: str,
     num_random_batches: int,
     directory: pathlib.Path,
+    plot_directory: pathlib.Path,
     force: bool
 ) -> None:
     """Benchmark sampling time."""
     directory = directory.resolve().joinpath('times')
     directory.mkdir(exist_ok=True, parents=True)
+    dfs = []
     for dataset_instance in _iterate_datasets(dataset):
-        _time_helper(dataset_instance, directory=directory, num_random_batches=num_random_batches, force=force)
+        dfs.append(_time_helper(
+            dataset_instance,
+            directory=directory,
+            num_random_batches=num_random_batches,
+            force=force,
+        ))
+    _plot_times(pd.concat(dfs), directory=plot_directory)
 
 
 def _time_helper(
@@ -87,7 +95,7 @@ def _time_helper(
 ) -> pd.DataFrame:
     output_path = directory.joinpath(dataset.get_normalized_name()).with_suffix('.tsv')
     if output_path.exists() and not force:
-        click.secho(f'Using pre-calculated time results for {dataset.get_normalized_name()}')
+        tqdm.write(f'Using pre-calculated time results for {dataset.get_normalized_name()}')
         return pd.read_csv(output_path, sep='\t')
 
     batch_sizes = [2 ** i for i in range(1, min(16, int(math.log2(dataset.training.num_triples))))]
@@ -128,25 +136,60 @@ def _time_helper(
     return df
 
 
+def _plot_times(df: pd.DataFrame, directory: pathlib.Path = plot_root, key: str = 'times'):
+    g = seaborn.relplot(
+        data=df,
+        x="batch_size",
+        y="time",
+        hue="sampler",
+        kind="line",
+        col="dataset",
+        col_wrap=4 if df.dataset.nunique() > 4 else None,
+        # ci=100,
+        # estimator=numpy.median,
+    ).set(
+        xscale="log",
+        xlabel="batch size",
+        ylabel="time (s)/batch",
+    )
+    g.tight_layout()
+
+    directory.mkdir(exist_ok=True, parents=True)
+    figure_path_stem = directory.joinpath(key)
+    plt.savefig(figure_path_stem.with_suffix('.svg'))
+    plt.savefig(figure_path_stem.with_suffix('.pdf'))
+    plt.savefig(figure_path_stem.with_suffix('.png'), dpi=300)
+
+
 @benchmark.command()
 @click.option("-d", "--dataset", type=click.Choice(datasets_dict, case_sensitive=False))
 @click.option("-b", "--batch_size", type=int, default=32)
 @click.option("-n", "--num-samples", type=int, default=4096)  # TODO: Determine this based on dataset?
 @click.option("-o", "--directory", type=pathlib.Path, default=measurement_root)
-@more_click.verbose_option
+@click.option("--plot-directory", type=pathlib.Path, default=plot_root)
+@verbose_option
 @force_option
 def fnr(
     dataset: str,
     batch_size: int,
     num_samples: int,
     directory: pathlib.Path,
+    plot_directory: pathlib.Path,
     force: bool,
 ):
     """Estimate false negative rate."""
     directory = directory.resolve().joinpath('fnr')
     directory.mkdir(exist_ok=True, parents=True)
+    dfs = []
     for dataset_instance in _iterate_datasets(dataset):
-        _fnr_helper(dataset_instance, directory=directory, num_samples=num_samples, batch_size=batch_size, force=force)
+        dfs.append(_fnr_helper(
+            dataset_instance,
+            directory=directory,
+            num_samples=num_samples,
+            batch_size=batch_size,
+            force=force,
+        ))
+    _plot_fnr(pd.concat(dfs), plot_directory)
 
 
 def _fnr_helper(
@@ -205,74 +248,7 @@ def _fnr_helper(
     return df
 
 
-def _iterate_datasets(dataset: Optional[str]) -> Iterable[Dataset]:
-    if dataset:
-        _dataset_list = [dataset]
-    else:
-        _dataset_list = _datasets
-    it = tqdm(_dataset_list, desc='Dataset')
-    for dataset in it:
-        it.set_postfix(dataset=dataset)
-        yield get_dataset(dataset=dataset)
-
-
-@main.group()
-def plot():
-    """Plot commands."""
-
-
-@plot.command(name='times')
-@click.option("-i", "--directory", type=pathlib.Path, default=measurement_root)
-@click.option("-o", "--output", type=pathlib.Path, default=plot_root)
-@more_click.verbose_option
-def plot_times(
-    directory: pathlib.Path,
-    output: pathlib.Path,
-):
-    """Create plots."""
-    key = 'times'
-    df = pd.concat([
-        pd.read_csv(path, sep='\t')
-        for path in directory.joinpath(key).iterdir()
-    ])
-    g = seaborn.relplot(
-        data=df,
-        x="batch_size",
-        y="time",
-        hue="sampler",
-        kind="line",
-        col="dataset",
-        col_wrap=4 if df.dataset.nunique() > 4 else None,
-        # ci=100,
-        # estimator=numpy.median,
-    ).set(
-        xscale="log",
-        xlabel="batch size",
-        ylabel="time (s)/batch",
-    )
-    g.tight_layout()
-
-    output.mkdir(exist_ok=True, parents=True)
-    figure_path_stem = output.joinpath(key)
-    plt.savefig(figure_path_stem.with_suffix('.svg'))
-    plt.savefig(figure_path_stem.with_suffix('.pdf'))
-    plt.savefig(figure_path_stem.with_suffix('.png'), dpi=300)
-
-
-@plot.command(name='fnr')
-@click.option("-i", "--directory", type=pathlib.Path, default=measurement_root)
-@click.option("-o", "--output", type=pathlib.Path, default=plot_root)
-@more_click.verbose_option
-def plot_fnr(
-    directory: pathlib.Path,
-    output: pathlib.Path,
-):
-    """Create false negative rate plots."""
-    key = 'fnr'
-    df = pd.concat([
-        pd.read_csv(path, sep='\t')
-        for path in directory.joinpath(key).iterdir()
-    ])
+def _plot_fnr(df: pd.DataFrame, directory: pathlib.Path, key: str = 'fnr'):
     g = seaborn.catplot(
         data=df,
         x="sampler",
@@ -285,11 +261,22 @@ def plot_fnr(
     )
     g.tight_layout()
 
-    output.mkdir(exist_ok=True, parents=True)
-    figure_path_stem = output.joinpath(key)
+    directory.mkdir(exist_ok=True, parents=True)
+    figure_path_stem = directory.joinpath(key)
     plt.savefig(figure_path_stem.with_suffix('.svg'))
     plt.savefig(figure_path_stem.with_suffix('.pdf'))
     plt.savefig(figure_path_stem.with_suffix('.png'), dpi=300)
+
+
+def _iterate_datasets(dataset: Optional[str]) -> Iterable[Dataset]:
+    if dataset:
+        _dataset_list = [dataset]
+    else:
+        _dataset_list = _datasets
+    it = tqdm(_dataset_list, desc='Dataset')
+    for dataset in it:
+        it.set_postfix(dataset=dataset)
+        yield get_dataset(dataset=dataset)
 
 
 if __name__ == '__main__':
