@@ -33,25 +33,6 @@ GIT_HASH = pykeen.get_git_hash()
 HERE = pathlib.Path(__file__).resolve().parent
 DEFAULT_DIRECTORY = HERE.joinpath("data", USER, GIT_HASH)
 
-#: Datasets to benchmark. Only pick pre-stratified ones
-_datasets = [
-    'countries',
-    'nations',
-    'umls',
-    'kinships',
-    'dbpedia50',
-    'codexsmall',
-    'wn18rr',
-    'wn18',
-    'codexmedium',
-    'fb15k237',
-    # 'fb15k',
-    # 'codexlarge',
-    # 'yago310',
-]
-# Order by increasing number of triples
-_datasets = sorted(_datasets, key=lambda s: get_docdata(datasets_dict[s])['statistics']['triples'])
-
 TIMES_KEY = 'times'
 FNR_KEY = 'fnr'
 TIMES_COLUMNS = ["batch_size", "batch_id", "time"]
@@ -293,11 +274,20 @@ def _iterate_datasets(dataset: Optional[str]) -> Iterable[Dataset]:
     if dataset:
         _dataset_list = [dataset]
     else:
-        _dataset_list = _datasets
+        _dataset_list = _get_datasets()
     it = tqdm(_dataset_list, desc='Dataset')
     for dataset in it:
         it.set_postfix(dataset=dataset)
         yield get_dataset(dataset=dataset)
+
+
+def _triples(d: str) -> int:
+    return get_docdata(datasets_dict[d])['statistics']['triples']
+
+
+def _get_datasets():
+    rv = sorted(datasets_dict, key=_triples)
+    return rv[:rv.index('fb15k237') + 1]  # include fb15k-237
 
 
 def make_space_above(axes, topmargin: float = 1.0) -> None:
