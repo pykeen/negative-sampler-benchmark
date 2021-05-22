@@ -1,4 +1,7 @@
-# Results on PyKEEN v1.4.1-dev ([2207eaef](https://github.com/pykeen/pykeen/commit/2207eaef); master)
+# Results on PyKEEN v1.4.1-dev (master)
+
+- See commit: [2207eaef](https://github.com/pykeen/pykeen/commit/2207eaef)
+- Browse commit: [2207eaef](https://github.com/pykeen/pykeen/tree/2207eaef)
 
 Run again with:
 

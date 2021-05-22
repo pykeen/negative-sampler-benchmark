@@ -81,7 +81,10 @@ def benchmark(
 
     with directory.joinpath('README.md').open('w') as file:
         print(dedent(f'''\
-        # Results on PyKEEN v{VERSION} ([{GIT_HASH}](https://github.com/pykeen/pykeen/commit/{GIT_HASH}); {GIT_BRANCH})
+        # Results on PyKEEN v{VERSION} ({GIT_BRANCH})
+
+        - See commit: [{GIT_HASH}](https://github.com/pykeen/pykeen/commit/{GIT_HASH})
+        - Browse commit: [{GIT_HASH}](https://github.com/pykeen/pykeen/tree/{GIT_HASH})
 
         Run again with:
         
