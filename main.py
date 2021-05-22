@@ -7,6 +7,7 @@ import logging
 import math
 import pathlib
 from itertools import product
+from textwrap import dedent
 from typing import Iterable, Optional, cast
 
 import click
@@ -28,7 +29,9 @@ from pykeen.sampling.filtering import PythonSetFilterer
 logger = logging.getLogger(__name__)
 
 USER = getpass.getuser()
+VERSION = pykeen.get_version()
 GIT_HASH = pykeen.get_git_hash()
+GIT_BRANCH = pykeen.get_git_branch()
 
 HERE = pathlib.Path(__file__).resolve().parent
 DEFAULT_DIRECTORY = HERE.joinpath("data", USER, GIT_HASH)
@@ -75,6 +78,32 @@ def benchmark(
     sns.set_style('whitegrid')
     _plot_times(pd.concat(times_dfs), key=TIMES_KEY, directory=directory)
     _plot_fnr(pd.concat(fnr_dfs), key=FNR_KEY, directory=directory)
+
+    with directory.joinpath('README.md').open('w') as file:
+        print(dedent(f'''\
+        # Results on PyKEEN v{VERSION} ([{GIT_HASH}](https://github.com/pykeen/pykeen/commit/{GIT_HASH}); {GIT_BRANCH})
+
+        Run again with:
+        
+        ```shell
+        $ git clone https://github.com/pykeen/pykeen.git
+        $ cd pykeen
+        $ git checkout 2207eaef
+        $ pip install -e .
+        $ cd ..
+        $ git clone https://github.com/pykeen/negative-sampler-benchmark.git
+        $ cd negative-sampler-benchmark
+        $ python main.py
+        ```
+
+        ## Speed Performance
+
+        ![Times](times.svg)
+        
+        ## False Negative Rate
+
+        ![False Negative Rate](fnr.png)        
+        '''), file=file)
 
 
 def _time_helper(
