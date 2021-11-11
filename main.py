@@ -21,7 +21,7 @@ from torch.utils.benchmark import Timer
 from tqdm import tqdm
 
 import pykeen.version
-from pykeen.datasets import datasets as datasets_dict, get_dataset
+from pykeen.datasets import dataset_resolver, get_dataset
 from pykeen.datasets.base import Dataset
 from pykeen.sampling import negative_sampler_resolver
 from pykeen.sampling.filtering import PythonSetFilterer
@@ -43,11 +43,12 @@ FNR_COLUMNS = ['fnr']
 
 
 @click.command()
-@click.option("-d", "--dataset", type=click.Choice(datasets_dict, case_sensitive=False))
+@click.option("-d", "--dataset", type=click.Choice(dataset_resolver.lookup_dict, case_sensitive=False))
 @click.option("--num-random-batches", type=int, default=20)
 @click.option("--batch-size", type=int, default=32)
 @click.option("-n", "--num-samples", type=int, default=4096)  # TODO: Determine this based on dataset?
 @click.option("-o", "--directory", type=pathlib.Path, default=DEFAULT_DIRECTORY)
+@click.option("--skip-fnr", is_flag=True)
 @force_option
 @verbose_option
 def benchmark(
@@ -56,6 +57,7 @@ def benchmark(
     batch_size: int,
     num_samples: int,
     directory: pathlib.Path,
+    skip_fnr: bool,
     force: bool,
 ) -> None:
     """Benchmark negative sampling."""
@@ -67,17 +69,19 @@ def benchmark(
             num_random_batches=num_random_batches,
             force=force,
         ))
-        fnr_dfs.append(_fnr_helper(
-            dataset_instance,
-            directory=directory.joinpath(FNR_KEY),
-            num_samples=num_samples,
-            batch_size=batch_size,
-            force=force,
-        ))
+        if not skip_fnr:
+            fnr_dfs.append(_fnr_helper(
+                dataset_instance,
+                directory=directory.joinpath(FNR_KEY),
+                num_samples=num_samples,
+                batch_size=batch_size,
+                force=force,
+            ))
 
     sns.set_style('whitegrid')
     _plot_times(pd.concat(times_dfs), key=TIMES_KEY, directory=directory)
-    _plot_fnr(pd.concat(fnr_dfs), key=FNR_KEY, directory=directory)
+    if not skip_fnr:
+        _plot_fnr(pd.concat(fnr_dfs), key=FNR_KEY, directory=directory)
 
     with directory.joinpath('README.md').open('w') as file:
         print(dedent(f'''\
@@ -314,11 +318,11 @@ def _iterate_datasets(dataset: Optional[str]) -> Iterable[Dataset]:
 
 
 def _triples(d: str) -> int:
-    return get_docdata(datasets_dict[d])['statistics']['triples']
+    return get_docdata(dataset_resolver.lookup_dict[d])['statistics']['triples']
 
 
 def _get_datasets():
-    rv = sorted(datasets_dict, key=_triples)
+    rv = sorted(dataset_resolver.lookup_dict, key=_triples)
     return rv[:rv.index('fb15k237') + 1]  # include fb15k-237
 
 
